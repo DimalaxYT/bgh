@@ -139,9 +139,9 @@ export default function Home() {
               <span className="text-emerald-500">Sans terminal.</span>
             </h1>
             <p className="text-zinc-400 max-w-2xl text-sm sm:text-base">
-              Le pont entre tes IA et ton dépôt : colle du code, dépose des fichiers ou un zip
-              entier, édite ou supprime — chaque action devient un commit propre, poussé
-              automatiquement.
+              Colle un token : l&apos;agent détecte tout seul ton compte, le dépôt et la
+              branche. Ensuite, colle du code, dépose des fichiers ou un zip entier, édite ou
+              supprime — chaque action devient un commit propre, poussé automatiquement.
             </p>
             <div className="flex flex-wrap justify-center gap-3">
               <Button

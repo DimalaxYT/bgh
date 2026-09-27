@@ -413,3 +413,173 @@ export async function validateConfig(
   }
   return { ok: true, login };
 }
+
+/* ------------------------------------------------------------------ */
+/* Agent de détection : token → compte → dépôts → branche             */
+/* (moteur heuristique 100 % local, aucune API d'IA externe)          */
+/* ------------------------------------------------------------------ */
+
+export interface DiscoveredRepo {
+  fullName: string;
+  isPrivate: boolean;
+  defaultBranch: string;
+  description: string | null;
+  language: string | null;
+  pushedAt: string | null;
+  fork: boolean;
+  writable: boolean;
+  score: number;
+  reasons: string[];
+}
+
+export interface TokenAnalysis {
+  login: string;
+  name: string | null;
+  avatarUrl: string | null;
+  scanned: number;
+  repos: DiscoveredRepo[];
+  suggestion: { repo: string; branch: string; reason: string } | null;
+}
+
+/** Indices de nommage : ces mots boostent un dépôt (projet lié au pusher). */
+const NAME_HINTS = /bgh|pusher|bot|glm|agent|brainstorm/i;
+
+/**
+ * Analyse un token et déduit tout seul le compte, les dépôts accessibles
+ * et la cible la plus probable (dépôt + branche).
+ */
+export async function analyzeToken(token: string): Promise<TokenAnalysis> {
+  // 1. Identité du compte
+  const userRes = await gh("/user", token);
+  if (userRes.status === 401) {
+    throw new Error("Token refusé par GitHub (401) — invalide ou expiré.");
+  }
+  if (!userRes.ok) {
+    throw new Error(`GitHub a répondu ${userRes.status} pendant l'analyse du compte.`);
+  }
+  const user = (await userRes.json()) as {
+    login: string;
+    name: string | null;
+    avatar_url: string | null;
+  };
+
+  // 2. Dépôts accessibles au token (pagination, 3 pages max = 300 dépôts)
+  const raw: Record<string, unknown>[] = [];
+  for (let page = 1; page <= 3; page++) {
+    const res = await gh(
+      `/user/repos?per_page=100&page=${page}&sort=pushed&visibility=all&affiliation=owner,collaborator,organization_member`,
+      token
+    );
+    if (!res.ok) break;
+    const chunk = (await res.json()) as Record<string, unknown>[];
+    raw.push(...chunk);
+    if (chunk.length < 100) break;
+  }
+
+  // 2b. Filet de sécurité : certains tokens fine-grained renvoient une liste
+  //     vide via /user/repos — on sonde alors le dépôt configuré en env.
+  const envRepo = process.env.GITHUB_REPO?.trim();
+  if (envRepo && !raw.some((r) => r.full_name === envRepo)) {
+    const probe = await gh(`/repos/${envRepo}`, token);
+    if (probe.ok) raw.push((await probe.json()) as Record<string, unknown>);
+  }
+
+  // 3. Score heuristique de chaque dépôt
+  const now = Date.now();
+  const scored: DiscoveredRepo[] = raw.map((r) => {
+    const fullName = String(r.full_name ?? "");
+    const perm = (r.permissions ?? {}) as Record<string, boolean>;
+    const pushedAt = (r.pushed_at as string) ?? null;
+    const reasons: string[] = [];
+    let score = 0;
+
+    const writable = !!perm.push;
+    if (writable) {
+      score += 50;
+      reasons.push("écriture");
+    }
+    if (perm.admin) {
+      score += 5;
+      reasons.push("admin");
+    }
+    if (!r.fork) {
+      score += 10;
+      reasons.push("dépôt source");
+    } else {
+      score += 2;
+      reasons.push("fork");
+    }
+    if (NAME_HINTS.test(fullName)) {
+      score += 8;
+      reasons.push("nom lié au projet");
+    }
+    if (r.description) score += 2;
+    if (r.language) score += 1;
+    if (pushedAt) {
+      const days = Math.max(0, (now - new Date(pushedAt).getTime()) / 86_400_000);
+      score += Math.max(0, 30 - Math.min(30, days));
+      if (days < 7) reasons.push("activité récente");
+    }
+
+    return {
+      fullName,
+      isPrivate: !!r.private,
+      defaultBranch: (r.default_branch as string) ?? "main",
+      description: (r.description as string | null) ?? null,
+      language: (r.language as string | null) ?? null,
+      pushedAt,
+      fork: !!r.fork,
+      writable,
+      score,
+      reasons,
+    };
+  });
+
+  scored.sort((a, b) => b.score - a.score || a.fullName.localeCompare(b.fullName));
+
+  // 4. Suggestion : le meilleur dépôt sur lequel on peut écrire
+  const best = scored.find((r) => r.writable) ?? null;
+  const suggestion = best
+    ? {
+        repo: best.fullName,
+        branch: best.defaultBranch,
+        reason: best.reasons.includes("activité récente")
+          ? "dépôt le plus récemment actif avec droits d'écriture"
+          : "meilleur score : droits d'écriture + fiabilité",
+      }
+    : null;
+
+  return {
+    login: user.login,
+    name: user.name,
+    avatarUrl: user.avatar_url,
+    scanned: raw.length,
+    repos: scored,
+    suggestion,
+  };
+}
+
+/** Liste les branches d'un dépôt (branche par défaut en premier). */
+export async function listBranches(
+  repo: string,
+  token: string
+): Promise<{ name: string; isDefault: boolean }[]> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+    throw new Error("Format de repo invalide — attendu : propriétaire/nom");
+  }
+  const repoRes = await gh(`/repos/${repo}`, token);
+  if (repoRes.status === 404) {
+    throw new Error(`Dépôt "${repo}" introuvable ou non accessible avec ce token.`);
+  }
+  if (!repoRes.ok) {
+    throw new Error(`GitHub a répondu ${repoRes.status} pour "${repo}".`);
+  }
+  const def = ((await repoRes.json()) as { default_branch?: string }).default_branch ?? "";
+  const res = await gh(`/repos/${repo}/branches?per_page=100`, token);
+  if (!res.ok) {
+    throw new Error(`Impossible de lister les branches (${res.status}).`);
+  }
+  const data = (await res.json()) as { name: string }[];
+  if (def && !data.some((b) => b.name === def)) data.unshift({ name: def });
+  return data.map((b) => ({ name: b.name, isDefault: b.name === def }));
+}
