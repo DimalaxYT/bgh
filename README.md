@@ -40,6 +40,46 @@ Variables d'environnement (voir `.env.example`) :
 - Start : `npm start`
 - Health check : `/api/health`
 
+## Anti-sommeil Render (keep-alive)
+
+Le plan gratuit de Render endort le service après 15 minutes sans visite (prochaine
+visite = démarrage à froid de 30 à 60 s). Le dépôt inclut un ping automatique toutes
+les 10 minutes, avec deux façons de le faire tourner.
+
+### Option recommandée : GitHub Actions (aucun PC requis)
+
+Le workflow `.github/workflows/keep-alive.yml` ping `/api/health` toutes les
+10 minutes depuis les serveurs de GitHub. Configuration après le déploiement Render :
+
+1. Sur GitHub : **Settings → Secrets and variables → Actions**
+   - Onglet **Variables** → `RENDER_URL` = `https://TON-SERVICE.onrender.com` (requis)
+   - Onglet **Secrets** → `DISCORD_WEBHOOK_URL` = URL d'un webhook Discord (optionnel,
+     pour les messages de statut dans un salon)
+   - Variable optionnelle `NOTIFY_ALL` = `true` pour un message à chaque ping
+     (par défaut : démarrage, changements d'état et pannes uniquement)
+2. Test manuel : onglet **Actions → Keep-alive Render → Run workflow**.
+
+À savoir :
+
+- Dépôt **public** = Actions gratuites à ce rythme ; en privé, ce rythme dépasse
+  les 2 000 minutes/mois du plan gratuit.
+- Le cron GitHub est « best effort » (parfois décalé de quelques minutes en heure
+  de pointe). Pour une marge maximale, passer le cron à `*/5` ou ajouter un
+  moniteur externe (cron-job.org, UptimeRobot).
+- Les workflows planifiés d'un dépôt public sont désactivés après 60 jours sans
+  commit : un commit occasionnel les réactive.
+
+### Option : le petit bot en local (`bot/`)
+
+`bot/keepalive.mjs` (zéro dépendance, Node 18+) ping le site et poste le statut
+dans Discord via webhook — instructions complètes dans `bot/README.md` :
+
+```bash
+KEEPALIVE_URL="https://TON-SERVICE.onrender.com" \
+DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/xxx" \
+node bot/keepalive.mjs
+```
+
 ## Sécurité
 
 - Chemins de fichiers assainis (remontées `../` et `.git/` interdites)
