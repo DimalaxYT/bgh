@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -37,6 +37,9 @@ import {
   Trash2,
   Link2,
   AlertTriangle,
+  Archive,
+  Download,
+  Upload,
 } from "lucide-react";
 
 interface TreeFile {
@@ -53,9 +56,13 @@ function formatSize(bytes: number): string {
 interface Props {
   refreshSignal: number;
   onMutate: (commitUrl?: string) => void;
+  repo: string;
+  branch: string;
 }
 
-export function FilesSection({ refreshSignal, onMutate }: Props) {
+const MAX_PUSH_BYTES = 25 * 1024 * 1024; // aligné sur /api/push
+
+export function FilesSection({ refreshSignal, onMutate, repo, branch }: Props) {
   const { toast } = useToast();
   const [files, setFiles] = useState<TreeFile[]>([]);
   const [truncated, setTruncated] = useState(false);
@@ -80,6 +87,13 @@ export function FilesSection({ refreshSignal, onMutate }: Props) {
   // Wipe (tout supprimer)
   const [wipeOpen, setWipeOpen] = useState(false);
   const [wiping, setWiping] = useState(false);
+
+  // Sauvegarde / restauration
+  const [backingUp, setBackingUp] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
 
   const loadFiles = useCallback(async () => {
     setLoading(true);
@@ -252,6 +266,107 @@ export function FilesSection({ refreshSignal, onMutate }: Props) {
     }
   };
 
+  /* ---------------- Sauvegarde / restauration ---------------- */
+
+  const downloadBackup = async () => {
+    setBackingUp(true);
+    try {
+      const res = await fetch("/api/backup", { cache: "no-store" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        toast({
+          title: "Sauvegarde impossible",
+          description: data?.error ?? `Erreur ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("Content-Disposition") ?? "";
+      const name = cd.match(/filename="?([^";]+)"?/)?.[1] ?? `backup-${Date.now()}.zip`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      const count = res.headers.get("X-Backup-Files") ?? "?";
+      toast({
+        title: "Sauvegarde téléchargée",
+        description: `${count} fichier(s) → ${name}`,
+      });
+    } catch {
+      toast({ title: "Erreur réseau pendant la sauvegarde", variant: "destructive" });
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
+  const onPickZip = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] ?? null;
+    e.target.value = ""; // permet de re-sélectionner le même fichier
+    if (!f) return;
+    if (!/\.zip$/i.test(f.name)) {
+      toast({
+        title: "Fichier refusé",
+        description: "Seules les archives .zip sont acceptées.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (f.size > MAX_PUSH_BYTES) {
+      toast({
+        title: "Archive trop volumineuse",
+        description: `${formatSize(f.size)} — maximum 25 Mo.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    setRestoreFile(f);
+    setRestoreOpen(true);
+  };
+
+  const confirmRestore = async () => {
+    if (!restoreFile) return;
+    setRestoring(true);
+    try {
+      const buf = new Uint8Array(await restoreFile.arrayBuffer());
+      let bin = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < buf.length; i += chunk) {
+        bin += String.fromCharCode(...buf.subarray(i, i + chunk));
+      }
+      const res = await fetch("/api/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: `restore: restauration complète depuis ${restoreFile.name}`,
+          replace: true,
+          files: [{ path: restoreFile.name, content: btoa(bin), extract: true }],
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        toast({
+          title: "Dépôt restauré",
+          description: `${data.files} fichier(s) — commit ${String(data.sha).slice(0, 7)}.`,
+        });
+        setRestoreOpen(false);
+        setRestoreFile(null);
+        loadFiles();
+        onMutate(data.url);
+      } else {
+        toast({ title: "Échec de la restauration", description: data.error, variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Erreur réseau pendant la restauration", variant: "destructive" });
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   const filtered = files.filter((f) => f.path.toLowerCase().includes(search.toLowerCase()));
 
   return (
@@ -350,6 +465,66 @@ export function FilesSection({ refreshSignal, onMutate }: Props) {
             ))}
           </ul>
         )}
+
+        {/* Sauvegarde & restauration (selon le dépôt configuré) */}
+        <div className="mt-4 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-emerald-400 flex items-center gap-1.5">
+                <Archive className="h-4 w-4" aria-hidden="true" />
+                Sauvegarde &amp; restauration
+              </p>
+              <p className="text-xs text-zinc-500 mt-0.5 truncate" title={`${repo} · ${branch}`}>
+                Dépôt ciblé : <span className="font-mono text-zinc-400">{repo || "…"} · {branch || "…"}</span>
+              </p>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                Télécharge tout le code en .zip, ou remets un zip : le dépôt sera remplacé
+                à l&apos;identique en un seul commit.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 shrink-0">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={downloadBackup}
+                disabled={backingUp || restoring}
+                aria-label="Télécharger une sauvegarde zip du dépôt"
+                className="border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300"
+              >
+                {backingUp ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Download className="h-4 w-4 mr-1" aria-hidden="true" />
+                )}
+                Sauvegarder (.zip)
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => zipInputRef.current?.click()}
+                disabled={backingUp || restoring}
+                aria-label="Charger un zip pour restaurer le dépôt"
+                className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800"
+              >
+                {restoring ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Upload className="h-4 w-4 mr-1" aria-hidden="true" />
+                )}
+                Charger un .zip
+              </Button>
+            </div>
+          </div>
+          <input
+            ref={zipInputRef}
+            type="file"
+            accept=".zip,application/zip"
+            className="hidden"
+            onChange={onPickZip}
+            aria-hidden="true"
+            tabIndex={-1}
+          />
+        </div>
 
         {/* Zone de danger : vider le dépôt */}
         <div className="mt-4 rounded-md border border-red-500/30 bg-red-500/5 p-3 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
@@ -517,6 +692,50 @@ export function FilesSection({ refreshSignal, onMutate }: Props) {
                 <Trash2 className="h-4 w-4 mr-1" aria-hidden="true" />
               )}
               Tout supprimer
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirmation de restauration (charger un zip) */}
+      <AlertDialog open={restoreOpen} onOpenChange={(o) => !o && !restoring && setRestoreOpen(false)}>
+        <AlertDialogContent className="bg-zinc-900 border-emerald-500/30">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Upload className="h-5 w-5 text-emerald-500" aria-hidden="true" />
+              Remplacer tout le dépôt ?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-zinc-300">
+              Le contenu actuel de <b className="font-mono">{repo}</b> ({files.length} fichier(s))
+              sera remplacé par le contenu de <b>{restoreFile?.name}</b>
+              {restoreFile ? ` (${formatSize(restoreFile.size)})` : ""}.
+            </AlertDialogDescription>
+            <AlertDialogDescription className="text-zinc-500">
+              Tout ce qui ne figure pas dans l&apos;archive sera supprimé. L&apos;historique reste
+              intact : une sauvegarde .zip récente est recommandée avant de continuer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={restoring}
+              className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800"
+            >
+              Annuler
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                confirmRestore();
+              }}
+              disabled={restoring}
+              className="bg-emerald-600 hover:bg-emerald-500"
+            >
+              {restoring ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" aria-hidden="true" />
+              ) : (
+                <Upload className="h-4 w-4 mr-1" aria-hidden="true" />
+              )}
+              Remplacer &amp; charger
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

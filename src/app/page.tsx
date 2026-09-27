@@ -231,7 +231,12 @@ export default function Home() {
             </h2>
             <div className="grid gap-6 lg:grid-cols-3">
               <div className="lg:col-span-2">
-                <FilesSection refreshSignal={signal} onMutate={bump} />
+                <FilesSection
+                  refreshSignal={signal}
+                  onMutate={bump}
+                  repo={status?.repo ?? ""}
+                  branch={status?.branch ?? ""}
+                />
               </div>
 
               {/* Derniers commits */}

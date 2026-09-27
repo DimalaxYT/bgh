@@ -420,6 +420,96 @@ export async function wipeRepo(
 }
 
 /* ------------------------------------------------------------------ */
+/* Sauvegarde : tout le dépôt dans un .zip (trees + blobs → JSZip)     */
+/* ------------------------------------------------------------------ */
+
+export interface BackupResult {
+  buffer: Buffer;
+  files: number;
+  bytes: number; // taille cumulée décompressée
+}
+
+const MAX_BACKUP_FILES = 500;
+const MAX_BACKUP_BYTES = 50 * 1024 * 1024; // 50 Mo décompressés
+
+/**
+ * Télécharge tout le contenu de la branche courante et lecompresse en .zip
+ * (sans dossier racine → recharger ce zip restaure le dépôt à l'identique).
+ * Sous-modules et liens symboliques ignorés ; limites : 500 fichiers / 50 Mo.
+ */
+export async function backupRepo(): Promise<BackupResult> {
+  const { token, repo, branch } = getConfig();
+  if (!token) throw new Error("Aucun token configuré.");
+  const base = `/repos/${repo}`;
+
+  // 1. Arborescence complète de la branche
+  const treeRes = await gh(`${base}/git/trees/${encodeURIComponent(branch)}?recursive=1`, token);
+  if (treeRes.status === 404) {
+    throw new Error("Dépôt vide — rien à sauvegarder.");
+  }
+  if (!treeRes.ok) {
+    const err = await treeRes.json().catch(() => ({}));
+    throw new Error(`Impossible de lire l'arborescence (${treeRes.status}) : ${err.message ?? "?"}`);
+  }
+  const tree = (await treeRes.json()) as {
+    truncated?: boolean;
+    tree?: { path: string; type: string; mode: string; sha: string; size?: number }[];
+  };
+  // Uniquement les fichiers réguliers (ignore sous-modules 160000, symlinks 120000…)
+  const blobs = (tree.tree ?? []).filter(
+    (e) => e.type === "blob" && (e.mode === "100644" || e.mode === "100755")
+  );
+  if (blobs.length === 0) throw new Error("Dépôt vide — rien à sauvegarder.");
+  if (tree.truncated) {
+    throw new Error("Dépôt trop volumineux pour un listing complet (limite GitHub).");
+  }
+  if (blobs.length > MAX_BACKUP_FILES) {
+    throw new Error(`Trop de fichiers (${blobs.length}). Maximum pour une sauvegarde : ${MAX_BACKUP_FILES}.`);
+  }
+
+  // 2. Récupération des blobs (par lots de 6 en parallèle)
+  const zip = new JSZip();
+  let bytes = 0;
+  let done = 0;
+  const BATCH = 6;
+  for (let i = 0; i < blobs.length; i += BATCH) {
+    const batch = blobs.slice(i, i + BATCH);
+    const results = await Promise.all(
+      batch.map(async (entry) => {
+        const res = await gh(`${base}/git/blobs/${entry.sha}`, token);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(`Blob inaccessible pour ${entry.path} (${res.status}) : ${err.message ?? "?"}`);
+        }
+        const data = (await res.json()) as { content?: string; encoding?: string };
+        const buf = Buffer.from((data.content ?? "").replace(/\n/g, ""), "base64");
+        return { path: entry.path, buf };
+      })
+    );
+    for (const { path, buf } of results) {
+      bytes += buf.length;
+      zip.file(path, buf);
+      done++;
+    }
+  }
+
+  if (bytes > MAX_BACKUP_BYTES) {
+    throw new Error(
+      `Contenu trop volumineux (${Math.round(bytes / (1024 * 1024))} Mo). Maximum pour une sauvegarde : 50 Mo.`
+    );
+  }
+  if (done === 0) throw new Error("Dépôt vide — rien à sauvegarder.");
+
+  // 3. Compression
+  const buffer = await zip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+    compressionOptions: { level: 6 },
+  });
+  return { buffer, files: done, bytes };
+}
+
+/* ------------------------------------------------------------------ */
 /* Statut + validation de configuration                                */
 /* ------------------------------------------------------------------ */
 
