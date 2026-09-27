@@ -499,12 +499,11 @@ export function FilesSection({ refreshSignal, onMutate, repo, branch }: Props) {
                 Sauvegarder (.zip)
               </Button>
               <Button
-                variant="outline"
                 size="sm"
                 onClick={() => zipInputRef.current?.click()}
                 disabled={backingUp || restoring}
                 aria-label="Charger un zip pour restaurer le dépôt"
-                className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800"
+                className="bg-emerald-600 text-white hover:bg-emerald-500"
               >
                 {restoring ? (
                   <Loader2 className="h-4 w-4 mr-1 animate-spin" aria-hidden="true" />
