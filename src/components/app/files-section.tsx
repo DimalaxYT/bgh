@@ -389,7 +389,7 @@ export function FilesSection({ refreshSignal, onMutate, repo, branch }: Props) {
             size="sm"
             onClick={loadFiles}
             aria-label="Rafraîchir la liste des fichiers"
-            className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800"
+            className="border-zinc-600 bg-zinc-800 text-zinc-200 hover:bg-zinc-700 hover:text-white"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
           </Button>
@@ -434,10 +434,10 @@ export function FilesSection({ refreshSignal, onMutate, repo, branch }: Props) {
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <FileText className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
-                  <span className="text-sm truncate font-mono" title={f.path}>
+                  <span className="text-sm truncate font-mono text-zinc-100" title={f.path}>
                     {f.path}
                   </span>
-                  <Badge variant="outline" className="border-zinc-800 text-zinc-500 shrink-0 hidden sm:inline-flex">
+                  <Badge variant="outline" className="border-zinc-700 text-zinc-400 shrink-0 hidden sm:inline-flex">
                     {formatSize(f.size)}
                   </Badge>
                 </div>
@@ -592,7 +592,7 @@ export function FilesSection({ refreshSignal, onMutate, repo, branch }: Props) {
             <Button
               variant="outline"
               onClick={() => setEditOpen(false)}
-              className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800"
+              className="border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
             >
               Annuler
             </Button>
@@ -632,7 +632,7 @@ export function FilesSection({ refreshSignal, onMutate, repo, branch }: Props) {
             </div>
           ) : (
             <AlertDialogFooter>
-              <AlertDialogCancel className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800">
+              <AlertDialogCancel className="border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700">
                 Annuler
               </AlertDialogCancel>
               <AlertDialogAction
@@ -674,7 +674,7 @@ export function FilesSection({ refreshSignal, onMutate, repo, branch }: Props) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800">
+            <AlertDialogCancel className="border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700">
               Annuler
             </AlertDialogCancel>
             <AlertDialogAction
@@ -717,7 +717,7 @@ export function FilesSection({ refreshSignal, onMutate, repo, branch }: Props) {
           <AlertDialogFooter>
             <AlertDialogCancel
               disabled={restoring}
-              className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800"
+              className="border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
             >
               Annuler
             </AlertDialogCancel>

@@ -635,7 +635,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved }: Props) {
             variant="outline"
             onClick={reset}
             disabled={saving || loading}
-            className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800"
+            className="border-zinc-600 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
           >
             <RotateCcw className="h-4 w-4 mr-1" aria-hidden="true" />
             Retour à l&apos;env
