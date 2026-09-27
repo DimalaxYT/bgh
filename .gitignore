@@ -2,3 +2,6 @@
 # données locales
 /db/
 *.db
+
+# secrets locaux (jamais committer)
+.env
