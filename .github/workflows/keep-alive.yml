@@ -1,0 +1,158 @@
+name: Keep-alive Render
+
+# Ping le site toutes les 10 minutes pour éviter la mise en sommeil du plan
+# gratuit (Render endort le service après 15 minutes sans requête entrante).
+#
+# Configuration (GitHub : Settings > Secrets and variables > Actions) :
+#   - Variable  RENDER_URL          = https://ton-service.onrender.com  (requis)
+#   - Secret    DISCORD_WEBHOOK_URL = webhook Discord (optionnel, messages de statut)
+#   - Variable  NOTIFY_ALL = true  (optionnel : message Discord à chaque ping)
+#
+# Test manuel : onglet Actions > Keep-alive Render > Run workflow.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # toutes les 10 minutes
+  workflow_dispatch:
+    inputs:
+      notify:
+        description: "Forcer l'envoi d'un message Discord"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-alive-render
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Ping de /api/health
+        id: ping
+        env:
+          RENDER_URL: ${{ vars.RENDER_URL }}
+        run: |
+          set -eu
+          if [ -z "${RENDER_URL//[[:space:]]/}" ]; then
+            echo "::warning::Variable RENDER_URL non definie (Settings > Secrets and variables > Actions > Variables > New repository variable). Ping ignore."
+            echo "up=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="${RENDER_URL%%[[:space:]]*}"
+          base="${base%/}"
+          ping_once() {
+            local out code sec ms
+            out=$(curl -sS -o /dev/null -w '%{http_code} %{time_total}' \
+              --max-time 45 -A 'keepalive-render/1.0' \
+              "$base/api/health" 2>/dev/null || echo "000 0")
+            code=${out%% *}
+            sec=${out##* }
+            ms=$(awk -v s="$sec" 'BEGIN { printf "%d", s * 1000 }')
+            echo "$code $ms"
+          }
+          read -r code ms <<< "$(ping_once)"
+          if [ "$code" != "200" ]; then
+            echo "Premier essai en echec (HTTP $code), nouvel essai dans 20 s (demarrage a froid possible)..."
+            sleep 20
+            read -r code ms <<< "$(ping_once)"
+          fi
+          up=false
+          [ "$code" = "200" ] && up=true
+          {
+            echo "up=$up"
+            echo "code=$code"
+            echo "ms=$ms"
+            echo "url=$base"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resultat : HTTP $code (${ms} ms) -> $up"
+
+      - name: Restaurer l'etat precedent
+        if: steps.ping.outputs.up == 'true' || steps.ping.outputs.up == 'false'
+        uses: actions/cache/restore@v4
+        with:
+          path: keepalive-state.txt
+          key: keepalive-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            keepalive-state-
+
+      - name: Message Discord si necessaire
+        if: steps.ping.outputs.up == 'true' || steps.ping.outputs.up == 'false'
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          UP: ${{ steps.ping.outputs.up }}
+          CODE: ${{ steps.ping.outputs.code }}
+          MS: ${{ steps.ping.outputs.ms }}
+          URL: ${{ steps.ping.outputs.url }}
+          NOTIFY_ALL: ${{ vars.NOTIFY_ALL }}
+          FORCE: ${{ inputs.notify }}
+        run: |
+          set -eu
+          if [ -z "$WEBHOOK" ]; then
+            echo "Secret DISCORD_WEBHOOK_URL absent : pas de notification Discord."
+            exit 0
+          fi
+          prev="unknown"
+          if [ -f keepalive-state.txt ]; then
+            prev=$(tr -d '[:space:]' < keepalive-state.txt)
+          fi
+          printf '%s\n' "$UP" > keepalive-state.txt
+          change=false
+          if [ "$prev" != "unknown" ] && [ "$prev" != "$UP" ]; then change=true; fi
+          should=false
+          if [ "$FORCE" = "true" ]; then should=true
+          elif [ "${NOTIFY_ALL,,}" = "true" ]; then should=true
+          elif [ "$change" = "true" ]; then should=true
+          elif [ "$UP" = "false" ]; then should=true
+          elif [ "$prev" = "unknown" ]; then should=true
+          fi
+          if [ "$should" != "true" ]; then
+            echo "Statut inchange ($UP) : pas de message Discord."
+            exit 0
+          fi
+          if [ "$UP" = "true" ]; then
+            color=3066993
+            title="Site en ligne"
+          else
+            color=15158332
+            title="Site injoignable"
+          fi
+          ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          payload=$(jq -n \
+            --arg title "$title" \
+            --argjson color "$color" \
+            --arg url "$URL" \
+            --arg code "$CODE" \
+            --arg latence "${MS} ms" \
+            --argjson change "$change" \
+            --arg ts "$ts" \
+            '{
+              username: "KeepAlive",
+              embeds: [{
+                title: $title,
+                description: $url,
+                color: $color,
+                fields: (
+                  [{name: "HTTP", value: $code, inline: true},
+                   {name: "Latence", value: $latence, inline: true}]
+                  + (if $change then [{name: "Changement detecte", value: "oui", inline: true}] else [] end)
+                ),
+                footer: {text: "Ping automatique toutes les 10 min"},
+                timestamp: $ts
+              }]
+            }')
+          http=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' \
+            -d "$payload" "$WEBHOOK" || echo "000")
+          echo "Webhook Discord : HTTP $http"
+
+      - name: Sauvegarder l'etat
+        if: always() && (steps.ping.outputs.up == 'true' || steps.ping.outputs.up == 'false')
+        uses: actions/cache/save@v4
+        with:
+          path: keepalive-state.txt
+          key: keepalive-state-${{ github.run_id }}-${{ github.run_attempt }}
