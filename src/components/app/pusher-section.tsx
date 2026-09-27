@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import {
   Rocket,
@@ -18,6 +19,7 @@ import {
   Loader2,
   Link2,
   Plus,
+  AlertTriangle,
 } from "lucide-react";
 
 interface PushFile {
@@ -58,6 +60,7 @@ export function PusherSection({ onMutate }: { onMutate: () => void }) {
   const [textContent, setTextContent] = useState("");
   const [message, setMessage] = useState("");
   const [pushing, setPushing] = useState(false);
+  const [replace, setReplace] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string; url?: string } | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -127,6 +130,7 @@ export function PusherSection({ onMutate }: { onMutate: () => void }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: message.trim() || undefined,
+          replace,
           files: files.map((f) => ({
             path: f.path,
             content: f.contentBase64,
@@ -136,11 +140,14 @@ export function PusherSection({ onMutate }: { onMutate: () => void }) {
       });
       const data = await res.json();
       if (res.ok && data.ok) {
-        const txt = `Commit ${data.sha.slice(0, 7)} créé — ${data.files} fichier(s) poussé(s).`;
+        const txt = replace
+          ? `Commit ${data.sha.slice(0, 7)} créé — dépôt remplacé par ${data.files} fichier(s).`
+          : `Commit ${data.sha.slice(0, 7)} créé — ${data.files} fichier(s) poussé(s).`;
         setResult({ ok: true, text: txt, url: data.url });
         toast({ title: "Poussé sur GitHub !", description: txt });
         setFiles([]);
         setMessage("");
+        setReplace(false);
         onMutate();
       } else {
         const hint =
@@ -341,17 +348,59 @@ export function PusherSection({ onMutate }: { onMutate: () => void }) {
                 className="bg-zinc-950 border-zinc-700 mt-1.5"
               />
             </div>
+
+            {/* Mode remplacement total */}
+            <div
+              className={`rounded-md border p-3 flex items-start gap-3 transition-colors ${
+                replace
+                  ? "border-amber-500/50 bg-amber-500/5"
+                  : "border-zinc-800 bg-zinc-950"
+              }`}
+            >
+              <Checkbox
+                id="replace-all"
+                checked={replace}
+                onCheckedChange={(v) => setReplace(v === true)}
+                aria-label="Remplacer tout le contenu du dépôt"
+                className="mt-0.5 border-zinc-600 data-[state=checked]:bg-amber-500 data-[state=checked]:border-amber-500 data-[state=checked]:text-zinc-950"
+              />
+              <div className="min-w-0">
+                <Label
+                  htmlFor="replace-all"
+                  className={`text-sm cursor-pointer flex items-center gap-1.5 ${
+                    replace ? "text-amber-400 font-semibold" : "text-zinc-200"
+                  }`}
+                >
+                  {replace && <AlertTriangle className="h-4 w-4" aria-hidden="true" />}
+                  Remplacer tout le contenu du dépôt
+                </Label>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  {replace
+                    ? "Le push effacera les fichiers actuels absents du lot : le dépôt deviendra exactement ton lot (idéal après un zip complet)."
+                    : "Décoché : le push ajoute/modifie sans toucher aux autres fichiers du dépôt."}
+                </p>
+              </div>
+            </div>
+
             <Button
               onClick={push}
               disabled={pushing || files.length === 0}
-              className="bg-emerald-600 hover:bg-emerald-500 h-12 text-base font-semibold"
+              className={`h-12 text-base font-semibold ${
+                replace ? "bg-amber-600 hover:bg-amber-500" : "bg-emerald-600 hover:bg-emerald-500"
+              }`}
             >
               {pushing ? (
                 <Loader2 className="h-5 w-5 mr-2 animate-spin" aria-hidden="true" />
+              ) : replace ? (
+                <AlertTriangle className="h-5 w-5 mr-2" aria-hidden="true" />
               ) : (
                 <Rocket className="h-5 w-5 mr-2" aria-hidden="true" />
               )}
-              {pushing ? "Pousse en cours…" : "Pousser vers GitHub"}
+              {pushing
+                ? "Pousse en cours…"
+                : replace
+                  ? "Remplacer & pousser"
+                  : "Pousser vers GitHub"}
             </Button>
 
             {result && (

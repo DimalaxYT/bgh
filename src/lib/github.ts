@@ -127,8 +127,14 @@ export async function extractZip(contentBase64: string): Promise<PushFile[]> {
  * Push a batch of files to GitHub as a single commit.
  * Handles the empty-repository case (no existing branch/ref yet).
  * Pushing an existing path = modification.
+ * replace=true : omets base_tree → l'arbre créé devient TOUT le contenu
+ * du dépôt (les fichiers existants absents du lot sont supprimés).
  */
-export async function pushFiles(files: PushFile[], message: string): Promise<PushResult> {
+export async function pushFiles(
+  files: PushFile[],
+  message: string,
+  replace = false
+): Promise<PushResult> {
   const { token, repo, branch } = getConfig();
   if (!token) throw new Error("Aucun token configuré (env ou interface).");
   if (files.length === 0) throw new Error("Aucun fichier à pousser.");
@@ -168,9 +174,9 @@ export async function pushFiles(files: PushFile[], message: string): Promise<Pus
     });
   }
 
-  // 3. Create tree (based on current tree when it exists)
+  // 3. Create tree (based on current tree when it exists — sauf en mode replace)
   const treeBody: Record<string, unknown> = { tree: treeItems };
-  if (baseTreeSha) treeBody.base_tree = baseTreeSha;
+  if (baseTreeSha && !replace) treeBody.base_tree = baseTreeSha;
   const treeRes = await gh(`${base}/git/trees`, token, {
     method: "POST",
     body: JSON.stringify(treeBody),
@@ -241,6 +247,18 @@ export async function listFiles(): Promise<TreeListing> {
   const { token, repo, branch } = getConfig();
   if (!token) throw new Error("Aucun token configuré.");
   const res = await gh(`/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`, token);
+  if (res.status === 404) {
+    // Particularité GitHub : /git/trees renvoie 404 quand l'arbre est vide
+    // (ex : dépôt vidé via un commit « wipe »). On confirme via /contents.
+    const rootRes = await gh(`/repos/${repo}/contents/?ref=${encodeURIComponent(branch)}`, token);
+    if (rootRes.ok) {
+      const root = await rootRes.json();
+      if (Array.isArray(root) && root.length === 0) {
+        return { files: [], truncated: false };
+      }
+    }
+    throw new Error(`Branche "${branch}" introuvable ou arbre inaccessible (404).`);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(`Impossible de lister les fichiers (${res.status}) : ${err.message ?? "?"}`);
@@ -316,6 +334,88 @@ export async function deleteFile(
   return {
     sha: data.commit?.sha ?? "",
     url: data.commit?.html_url ?? `https://github.com/${repo}/commit/${data.commit?.sha ?? ""}`,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Wipe : vider tout le dépôt en UN SEUL commit (arbre vide)           */
+/* ------------------------------------------------------------------ */
+
+export interface WipeResult {
+  sha: string;
+  url: string;
+  removed: number;
+  alreadyEmpty: boolean;
+}
+
+/**
+ * Supprime tous les fichiers du dépôt en un unique commit :
+ * on crée un arbre vide, on en fait un commit dont le parent est le
+ * head actuel, puis on déplace la branche. Historique intact → tout
+ * reste récupérable via les commits précédents.
+ */
+export async function wipeRepo(
+  message = "wipe: suppression de tous les fichiers"
+): Promise<WipeResult> {
+  const { token, repo, branch } = getConfig();
+  if (!token) throw new Error("Aucun token configuré (env ou interface).");
+  const base = `/repos/${repo}`;
+
+  // 1. Head actuel de la branche (si absente → déjà vide)
+  const refRes = await gh(`${base}/git/ref/heads/${encodeURIComponent(branch)}`, token);
+  if (refRes.status === 404) {
+    return { sha: "", url: "", removed: 0, alreadyEmpty: true };
+  }
+  if (!refRes.ok) {
+    const err = await refRes.json().catch(() => ({}));
+    throw new Error(`Impossible de lire la branche "${branch}" (${refRes.status}) : ${err.message ?? "?"}`);
+  }
+  const headSha = (await refRes.json()).object.sha as string;
+
+  // 2. Compter les fichiers actuels (informatif)
+  let removed = 0;
+  const commitRes = await gh(`${base}/git/commits/${headSha}`, token);
+  if (commitRes.ok) {
+    const treeSha = ((await commitRes.json()) as { tree?: { sha?: string } }).tree?.sha;
+    if (treeSha) {
+      const listRes = await gh(`${base}/git/trees/${treeSha}?recursive=1`, token);
+      if (listRes.ok) {
+        const data = (await listRes.json()) as { tree?: { type: string }[] };
+        removed = (data.tree ?? []).filter((e) => e.type === "blob").length;
+      }
+    }
+  }
+
+  // 3. Arbre vide — GitHub refuse { tree: [] } (422), on utilise donc le SHA
+  //    canonique de l'arbre vide de git (déterministe, accepté par l'API).
+  const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+  // 4. Commit unique (parent = head actuel)
+  const newCommitRes = await gh(`${base}/git/commits`, token, {
+    method: "POST",
+    body: JSON.stringify({ message, tree: emptyTreeSha, parents: [headSha] }),
+  });
+  if (!newCommitRes.ok) {
+    const err = await newCommitRes.json().catch(() => ({}));
+    throw new Error(`Échec création commit wipe (${newCommitRes.status}) : ${err.message ?? "?"}`);
+  }
+  const commit = (await newCommitRes.json()) as { sha: string; html_url?: string };
+
+  // 5. Déplacer la branche
+  const updRes = await gh(`${base}/git/refs/heads/${encodeURIComponent(branch)}`, token, {
+    method: "PATCH",
+    body: JSON.stringify({ sha: commit.sha, force: false }),
+  });
+  if (!updRes.ok) {
+    const err = await updRes.json().catch(() => ({}));
+    throw new Error(`Commit créé mais branche non déplacée (${updRes.status}) : ${err.message ?? "?"}`);
+  }
+
+  return {
+    sha: commit.sha,
+    url: commit.html_url || `https://github.com/${repo}/commit/${commit.sha}`,
+    removed,
+    alreadyEmpty: false,
   };
 }
 

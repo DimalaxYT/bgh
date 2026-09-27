@@ -27,9 +27,12 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json().catch(() => null);
+    const replace = body?.replace === true;
     const message = typeof body?.message === "string" && body.message.trim()
       ? body.message.trim()
-      : "update: mise à jour via bgh-pusher";
+      : replace
+        ? "replace: remplacement complet du contenu du dépôt"
+        : "update: mise à jour via bgh-pusher";
     const incoming: IncomingFile[] = Array.isArray(body?.files) ? body.files : [];
 
     if (incoming.length === 0) {
@@ -73,7 +76,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await pushFiles(files, message);
+    const result = await pushFiles(files, message, body?.replace === true);
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Erreur inconnue";

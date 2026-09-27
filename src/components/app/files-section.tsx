@@ -36,6 +36,7 @@ import {
   Search,
   Trash2,
   Link2,
+  AlertTriangle,
 } from "lucide-react";
 
 interface TreeFile {
@@ -75,6 +76,10 @@ export function FilesSection({ refreshSignal, onMutate }: Props) {
   const [deleteSha, setDeleteSha] = useState("");
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // Wipe (tout supprimer)
+  const [wipeOpen, setWipeOpen] = useState(false);
+  const [wiping, setWiping] = useState(false);
 
   const loadFiles = useCallback(async () => {
     setLoading(true);
@@ -216,6 +221,37 @@ export function FilesSection({ refreshSignal, onMutate }: Props) {
     }
   };
 
+  const confirmWipe = async () => {
+    setWiping(true);
+    try {
+      const res = await fetch("/api/wipe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "wipe: suppression de tous les fichiers via bgh-pusher" }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        if (data.alreadyEmpty) {
+          toast({ title: "Dépôt déjà vide", description: "Rien à supprimer." });
+        } else {
+          toast({
+            title: "Dépôt vidé",
+            description: `${data.removed} fichier(s) supprimé(s) — commit ${String(data.sha).slice(0, 7)}.`,
+          });
+          onMutate(data.url);
+        }
+        setWipeOpen(false);
+        loadFiles();
+      } else {
+        toast({ title: "Échec du wipe", description: data.error, variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Erreur réseau", variant: "destructive" });
+    } finally {
+      setWiping(false);
+    }
+  };
+
   const filtered = files.filter((f) => f.path.toLowerCase().includes(search.toLowerCase()));
 
   return (
@@ -314,6 +350,31 @@ export function FilesSection({ refreshSignal, onMutate }: Props) {
             ))}
           </ul>
         )}
+
+        {/* Zone de danger : vider le dépôt */}
+        <div className="mt-4 rounded-md border border-red-500/30 bg-red-500/5 p-3 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-red-400 flex items-center gap-1.5">
+              <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+              Vider le dépôt
+            </p>
+            <p className="text-xs text-zinc-500 mt-0.5">
+              Supprime tous les fichiers en un seul commit « wipe ». Pratique juste avant de
+              pousser un zip complet avec « Remplacer tout ».
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setWipeOpen(true)}
+            disabled={loading || files.length === 0 || wiping}
+            aria-label="Supprimer tous les fichiers du dépôt"
+            className="border-red-500/50 text-red-400 hover:bg-red-500/10 hover:text-red-300 shrink-0"
+          >
+            <Trash2 className="h-4 w-4 mr-1" aria-hidden="true" />
+            Tout supprimer ({files.length})
+          </Button>
+        </div>
       </CardContent>
 
       {/* Dialoge d'édition */}
@@ -417,6 +478,47 @@ export function FilesSection({ refreshSignal, onMutate }: Props) {
               </AlertDialogAction>
             </AlertDialogFooter>
           )}
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirmation du wipe complet */}
+      <AlertDialog open={wipeOpen} onOpenChange={(o) => !o && setWipeOpen(false)}>
+        <AlertDialogContent className="bg-zinc-900 border-red-500/30">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-red-500" aria-hidden="true" />
+              Vider tout le dépôt ?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-zinc-300">
+              Les <b>{files.length}</b> fichier(s) actuellement visibles seront supprimés en un
+              seul commit « wipe ».
+            </AlertDialogDescription>
+            <AlertDialogDescription className="text-zinc-500">
+              L&apos;historique reste intact : chaque fichier reste récupérable via les commits
+              précédents (revert ou checkout). Pense ensuite à pousser ton nouveau contenu
+              (zip + « Remplacer tout »).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-zinc-700 bg-zinc-950 hover:bg-zinc-800">
+              Annuler
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                confirmWipe();
+              }}
+              disabled={wiping}
+              className="bg-red-600 hover:bg-red-500"
+            >
+              {wiping ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" aria-hidden="true" />
+              ) : (
+                <Trash2 className="h-4 w-4 mr-1" aria-hidden="true" />
+              )}
+              Tout supprimer
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
