@@ -36,7 +36,7 @@ Variables d'environnement (voir `.env.example`) :
 ## Déploiement sur Render
 
 - Runtime : Node
-- Build : `npm install && npm run build`
+- Build : `npm install --include=dev && npm run build`
 - Start : `npm start`
 - Health check : `/api/health`
 
