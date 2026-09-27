@@ -1,3 +1,4 @@
-# Test E2E
+# Test E2E — modifié
 
-Ce fichier a été poussé via l'interface de bgh pusher pendant la vérification navigateur.
+Contenu mis à jour via le dialogue d'édition de bgh pusher (landing v2).
+Si tu lis ceci sur GitHub, le bouton Modifier fonctionne.
