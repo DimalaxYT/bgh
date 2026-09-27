@@ -635,25 +635,13 @@ export interface TokenAnalysis {
 const NAME_HINTS = /bgh|pusher|bot|glm|agent|brainstorm/i;
 
 /**
- * Analyse un token et déduit tout seul le compte, les dépôts accessibles
- * et la cible la plus probable (dépôt + branche).
+ * Scanne tous les dépôts accessibles au token (pagination 3 pages = 300
+ * dépôts, plus sonde du repo env en filet de sécurité) et les retourne
+ * triés par score heuristique décroissant. Utilisé par l'agent de
+ * détection ET par la vue « Tes dépôts ».
  */
-export async function analyzeToken(token: string): Promise<TokenAnalysis> {
-  // 1. Identité du compte
-  const userRes = await gh("/user", token);
-  if (userRes.status === 401) {
-    throw new Error("Token refusé par GitHub (401) — invalide ou expiré.");
-  }
-  if (!userRes.ok) {
-    throw new Error(`GitHub a répondu ${userRes.status} pendant l'analyse du compte.`);
-  }
-  const user = (await userRes.json()) as {
-    login: string;
-    name: string | null;
-    avatar_url: string | null;
-  };
-
-  // 2. Dépôts accessibles au token (pagination, 3 pages max = 300 dépôts)
+export async function scanRepos(token: string): Promise<{ repos: DiscoveredRepo[]; scanned: number }> {
+  // 1. Dépôts accessibles au token (pagination, 3 pages max = 300 dépôts)
   const raw: Record<string, unknown>[] = [];
   for (let page = 1; page <= 3; page++) {
     const res = await gh(
@@ -666,7 +654,7 @@ export async function analyzeToken(token: string): Promise<TokenAnalysis> {
     if (chunk.length < 100) break;
   }
 
-  // 2b. Filet de sécurité : certains tokens fine-grained renvoient une liste
+  // 1b. Filet de sécurité : certains tokens fine-grained renvoient une liste
   //     vide via /user/repos — on sonde alors le dépôt configuré en env.
   const envRepo = process.env.GITHUB_REPO?.trim();
   if (envRepo && !raw.some((r) => r.full_name === envRepo)) {
@@ -674,7 +662,7 @@ export async function analyzeToken(token: string): Promise<TokenAnalysis> {
     if (probe.ok) raw.push((await probe.json()) as Record<string, unknown>);
   }
 
-  // 3. Score heuristique de chaque dépôt
+  // 2. Score heuristique de chaque dépôt
   const now = Date.now();
   const scored: DiscoveredRepo[] = raw.map((r) => {
     const fullName = String(r.full_name ?? "");
@@ -726,8 +714,32 @@ export async function analyzeToken(token: string): Promise<TokenAnalysis> {
   });
 
   scored.sort((a, b) => b.score - a.score || a.fullName.localeCompare(b.fullName));
+  return { repos: scored, scanned: raw.length };
+}
 
-  // 4. Suggestion : le meilleur dépôt sur lequel on peut écrire
+/**
+ * Analyse un token et déduit tout seul le compte, les dépôts accessibles
+ * et la cible la plus probable (dépôt + branche).
+ */
+export async function analyzeToken(token: string): Promise<TokenAnalysis> {
+  // 1. Identité du compte
+  const userRes = await gh("/user", token);
+  if (userRes.status === 401) {
+    throw new Error("Token refusé par GitHub (401) — invalide ou expiré.");
+  }
+  if (!userRes.ok) {
+    throw new Error(`GitHub a répondu ${userRes.status} pendant l'analyse du compte.`);
+  }
+  const user = (await userRes.json()) as {
+    login: string;
+    name: string | null;
+    avatar_url: string | null;
+  };
+
+  // 2. Scan + scoring des dépôts (logique partagée avec /api/repos)
+  const { repos: scored, scanned } = await scanRepos(token);
+
+  // 3. Suggestion : le meilleur dépôt sur lequel on peut écrire
   const best = scored.find((r) => r.writable) ?? null;
   const suggestion = best
     ? {
@@ -743,10 +755,29 @@ export async function analyzeToken(token: string): Promise<TokenAnalysis> {
     login: user.login,
     name: user.name,
     avatarUrl: user.avatar_url,
-    scanned: raw.length,
+    scanned,
     repos: scored,
     suggestion,
   };
+}
+
+/**
+ * Liste tous les dépôts accessibles avec le token actuellement configuré
+ * (vue « Tes dépôts » de la page principale).
+ */
+export async function listRepos(): Promise<{ login: string; repos: DiscoveredRepo[] }> {
+  const { token } = getConfig();
+  if (!token) throw new Error("Aucun token configuré.");
+  const userRes = await gh("/user", token);
+  if (userRes.status === 401) {
+    throw new Error("Token refusé par GitHub (401) — invalide ou expiré.");
+  }
+  if (!userRes.ok) {
+    throw new Error(`GitHub a répondu ${userRes.status} pendant la récupération du compte.`);
+  }
+  const login = ((await userRes.json()) as { login: string }).login;
+  const { repos } = await scanRepos(token);
+  return { login, repos };
 }
 
 /** Liste les branches d'un dépôt (branche par défaut en premier). */

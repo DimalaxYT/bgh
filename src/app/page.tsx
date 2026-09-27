@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { PusherSection } from "@/components/app/pusher-section";
 import { FilesSection } from "@/components/app/files-section";
+import { ReposSection } from "@/components/app/repos-section";
 import { SettingsDialog } from "@/components/app/settings-dialog";
 import {
   Github,
@@ -102,6 +103,12 @@ export default function Home() {
               className="px-3 py-2 text-sm text-zinc-400 hover:text-emerald-400 rounded-md hover:bg-zinc-900 transition-colors"
             >
               Fichiers
+            </a>
+            <a
+              href="#depots"
+              className="px-3 py-2 text-sm text-zinc-400 hover:text-emerald-400 rounded-md hover:bg-zinc-900 transition-colors"
+            >
+              Dépôts
             </a>
           </nav>
           <Button
@@ -299,6 +306,29 @@ export default function Home() {
                 </CardContent>
               </Card>
             </div>
+          </div>
+        </section>
+        {/* Section Dépôts */}
+        <section
+          id="depots"
+          aria-label="Tes dépôts GitHub"
+          className="scroll-mt-20"
+        >
+          <div className="max-w-6xl mx-auto px-4 py-12">
+            <h2 className="text-xl sm:text-2xl font-bold mb-6 flex items-center gap-2">
+              <span className="h-8 w-8 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center text-base font-bold">
+                3
+              </span>
+              Explore tous tes dépôts
+            </h2>
+            <ReposSection
+              refreshSignal={signal}
+              currentRepo={status?.repo ?? ""}
+              onTargetChange={() => {
+                refreshStatus();
+                bump();
+              }}
+            />
           </div>
         </section>
       </main>
