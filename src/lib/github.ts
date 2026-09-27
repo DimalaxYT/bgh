@@ -2,24 +2,50 @@ import JSZip from "jszip";
 
 const API = "https://api.github.com";
 
-export interface PushFile {
-  path: string;
-  contentBase64: string;
+/* ------------------------------------------------------------------ */
+/* Configuration : env + override en mémoire (modifiable via l'UI)     */
+/* ------------------------------------------------------------------ */
+
+type ConfigOverride = { token?: string; repo?: string; branch?: string };
+
+const g = globalThis as unknown as { __bghPusherCfg?: ConfigOverride };
+
+export function setConfigOverride(partial: ConfigOverride) {
+  const clean = Object.fromEntries(
+    Object.entries(partial).filter(([, v]) => typeof v === "string" && v.trim() !== "")
+  ) as ConfigOverride;
+  g.__bghPusherCfg = { ...(g.__bghPusherCfg ?? {}), ...clean };
 }
 
-export interface PushResult {
-  sha: string;
-  url: string;
-  files: number;
+export function clearConfigOverride() {
+  g.__bghPusherCfg = undefined;
 }
 
 export function getConfig() {
+  const o = g.__bghPusherCfg ?? {};
+  const token = o.token || process.env.GITHUB_TOKEN || "";
+  const repo = o.repo || process.env.GITHUB_REPO || "DimalaxYT/bgh";
+  const branch = o.branch || process.env.GITHUB_BRANCH || "main";
   return {
-    token: process.env.GITHUB_TOKEN || "",
-    repo: process.env.GITHUB_REPO || "DimalaxYT/bgh",
-    branch: process.env.GITHUB_BRANCH || "main",
+    token,
+    repo,
+    branch,
+    tokenSource: (o.token ? "custom" : process.env.GITHUB_TOKEN ? "env" : "none") as
+      | "custom"
+      | "env"
+      | "none",
   };
 }
+
+export function maskToken(token: string): string {
+  if (!token) return "";
+  if (token.length <= 16) return `${token.slice(0, 4)}…`;
+  return `${token.slice(0, 11)}…${token.slice(-4)}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Client HTTP GitHub                                                  */
+/* ------------------------------------------------------------------ */
 
 function ghHeaders(token: string) {
   return {
@@ -39,10 +65,31 @@ async function gh(path: string, token: string, init?: RequestInit) {
   });
 }
 
+/** Encode un chemin de fichier pour l'URL (conserve les /). */
+function encodePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+/* ------------------------------------------------------------------ */
+/* Utilitaires fichiers                                                */
+/* ------------------------------------------------------------------ */
+
+export interface PushFile {
+  path: string;
+  contentBase64: string;
+}
+
+export interface PushResult {
+  sha: string;
+  url: string;
+  files: number;
+}
+
 /** Normalize and validate a file path. Throws on invalid paths. */
 export function sanitizePath(raw: string): string {
   let p = raw.replace(/\\/g, "/").trim();
-  p = p.split("/")
+  p = p
+    .split("/")
     .filter((seg) => seg && seg !== "." && seg !== "..")
     .join("/");
   if (!p) throw new Error(`Chemin invalide : "${raw}"`);
@@ -53,16 +100,13 @@ export function sanitizePath(raw: string): string {
 }
 
 /** Extract a base64-encoded zip into individual files (server-side). */
-export async function extractZip(
-  contentBase64: string
-): Promise<PushFile[]> {
+export async function extractZip(contentBase64: string): Promise<PushFile[]> {
   const zip = await JSZip.loadAsync(Buffer.from(contentBase64, "base64"));
   const out: PushFile[] = [];
   const entries = Object.values(zip.files);
   for (const entry of entries) {
     if (entry.dir) continue;
     const name = entry.name;
-    // Skip OS noise
     if (name.includes("__MACOSX") || name.endsWith(".DS_Store")) continue;
     const content = await entry.async("base64");
     try {
@@ -75,16 +119,18 @@ export async function extractZip(
   return out;
 }
 
+/* ------------------------------------------------------------------ */
+/* Push (création / modification de fichiers en un commit)             */
+/* ------------------------------------------------------------------ */
+
 /**
  * Push a batch of files to GitHub as a single commit.
  * Handles the empty-repository case (no existing branch/ref yet).
+ * Pushing an existing path = modification.
  */
-export async function pushFiles(
-  files: PushFile[],
-  message: string
-): Promise<PushResult> {
+export async function pushFiles(files: PushFile[], message: string): Promise<PushResult> {
   const { token, repo, branch } = getConfig();
-  if (!token) throw new Error("GITHUB_TOKEN n'est pas configuré côté serveur.");
+  if (!token) throw new Error("Aucun token configuré (env ou interface).");
   if (files.length === 0) throw new Error("Aucun fichier à pousser.");
   const base = `/repos/${repo}`;
 
@@ -177,9 +223,111 @@ export async function pushFiles(
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Lecture : arborescence + contenu d'un fichier                       */
+/* ------------------------------------------------------------------ */
+
+export interface TreeFile {
+  path: string;
+  size: number;
+}
+
+export interface TreeListing {
+  files: TreeFile[];
+  truncated: boolean;
+}
+
+export async function listFiles(): Promise<TreeListing> {
+  const { token, repo, branch } = getConfig();
+  if (!token) throw new Error("Aucun token configuré.");
+  const res = await gh(`/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`, token);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Impossible de lister les fichiers (${res.status}) : ${err.message ?? "?"}`);
+  }
+  const data = (await res.json()) as {
+    truncated?: boolean;
+    tree?: { path: string; type: string; size?: number }[];
+  };
+  const files = (data.tree ?? [])
+    .filter((e) => e.type === "blob")
+    .map((e) => ({ path: e.path, size: e.size ?? 0 }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  return { files, truncated: !!data.truncated };
+}
+
+export interface FileContent {
+  path: string;
+  sha: string;
+  size: number;
+  content: string;
+  isText: boolean;
+}
+
+export async function getFile(path: string): Promise<FileContent> {
+  const { token, repo, branch } = getConfig();
+  if (!token) throw new Error("Aucun token configuré.");
+  const res = await gh(
+    `/repos/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(branch)}`,
+    token
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Impossible de lire "${path}" (${res.status}) : ${err.message ?? "?"}`);
+  }
+  const data = (await res.json()) as {
+    path: string;
+    sha: string;
+    size: number;
+    content?: string;
+  };
+  const buf = Buffer.from(data.content ?? "", "base64");
+  // Heuristique binaire : octet nul dans les 8 premiers Ko, ou fichier > 1 Mo
+  const isText = data.size <= 1_000_000 && !buf.subarray(0, 8000).includes(0);
+  return {
+    path: data.path,
+    sha: data.sha,
+    size: data.size,
+    content: isText ? buf.toString("utf8") : "",
+    isText,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Suppression d'un fichier (Contents API, 1 commit par fichier)       */
+/* ------------------------------------------------------------------ */
+
+export async function deleteFile(
+  path: string,
+  sha: string,
+  message: string
+): Promise<{ sha: string; url: string }> {
+  const { token, repo, branch } = getConfig();
+  if (!token) throw new Error("Aucun token configuré.");
+  const res = await gh(`/repos/${repo}/contents/${encodePath(path)}`, token, {
+    method: "DELETE",
+    body: JSON.stringify({ message, sha, branch }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Suppression impossible (${res.status}) : ${err.message ?? "?"}`);
+  }
+  const data = (await res.json()) as { commit?: { sha: string; html_url?: string } };
+  return {
+    sha: data.commit?.sha ?? "",
+    url: data.commit?.html_url ?? `https://github.com/${repo}/commit/${data.commit?.sha ?? ""}`,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Statut + validation de configuration                                */
+/* ------------------------------------------------------------------ */
+
 export interface RepoStatus {
   tokenValid: boolean;
   login: string | null;
+  tokenMasked: string;
+  tokenSource: "custom" | "env" | "none";
   repo: string;
   branch: string;
   repoFound: boolean;
@@ -190,10 +338,12 @@ export interface RepoStatus {
 }
 
 export async function getStatus(): Promise<RepoStatus> {
-  const { token, repo, branch } = getConfig();
+  const { token, repo, branch, tokenSource } = getConfig();
   const status: RepoStatus = {
     tokenValid: false,
     login: null,
+    tokenMasked: maskToken(token),
+    tokenSource,
     repo,
     branch,
     repoFound: false,
@@ -204,7 +354,7 @@ export async function getStatus(): Promise<RepoStatus> {
   };
 
   if (!token) {
-    status.error = "GITHUB_TOKEN manquant côté serveur.";
+    status.error = "Aucun token configuré — colle-en un dans Paramètres.";
     return status;
   }
 
@@ -225,7 +375,7 @@ export async function getStatus(): Promise<RepoStatus> {
   status.repoFound = true;
   status.isPrivate = repoData.private as boolean;
 
-  const commitsRes = await gh(`/repos/${repo}/commits?sha=${branch}&per_page=8`, token);
+  const commitsRes = await gh(`/repos/${repo}/commits?sha=${encodeURIComponent(branch)}&per_page=8`, token);
   if (commitsRes.ok) {
     const list = (await commitsRes.json()) as {
       sha: string;
@@ -241,4 +391,25 @@ export async function getStatus(): Promise<RepoStatus> {
     }));
   }
   return status;
+}
+
+/** Vérifie un token + accès repo avant de l'enregistrer. */
+export async function validateConfig(
+  token: string,
+  repo: string
+): Promise<{ ok: boolean; login?: string; error?: string }> {
+  const userRes = await gh("/user", token);
+  if (!userRes.ok) {
+    return { ok: false, error: `Token refusé par GitHub (${userRes.status}).` };
+  }
+  const login = ((await userRes.json()) as { login: string }).login;
+  const repoRes = await gh(`/repos/${repo}`, token);
+  if (!repoRes.ok) {
+    return {
+      ok: false,
+      login,
+      error: `Token valide (${login}) mais le repo "${repo}" est inaccessible avec celui-ci.`,
+    };
+  }
+  return { ok: true, login };
 }

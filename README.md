@@ -11,7 +11,9 @@ Les IA en mode chat ne peuvent pas pousser de code sur GitHub. Ce site sert de p
 1. **Coller du texte** : nom de fichier + contenu (ex : `app/page.js`)
 2. **Déposer des fichiers** : glisser-déposer multiple, `.zip` extracté automatiquement côté serveur
 3. **Bouton « Pousser vers GitHub »** : un seul commit propre contenant tous les fichiers (API Git Data : blobs → tree → commit → mise à jour de la branche)
-4. **Historique en direct** : les derniers commits du dépôt s'affichent à droite
+4. **Gérer le dépôt** : vue de tous les fichiers présents, avec recherche — modifier (éditeur intégré) ou supprimer (commit de suppression) en un clic
+5. **Paramètres** : changer de token / dépôt / branche depuis l'interface — le token est validé auprès de GitHub avant enregistrement (stocké en mémoire serveur, jamais renvoyé en clair ; bouton « Retour à l'env » pour revenir à la variable d'environnement)
+6. **Historique en direct** : les derniers commits du dépôt s'affichent à droite
 
 ## Stack
 
